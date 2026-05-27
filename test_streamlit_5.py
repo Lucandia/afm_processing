@@ -659,6 +659,10 @@ def make_processed_only_fig(
     """
     fig, ax = plt.subplots(1, 1, figsize=(6, 5))
 
+    # Make SVG/PDF background transparent
+    fig.patch.set_alpha(0.0)
+    ax.set_facecolor("none")
+
     if colormap == "gwy_sky":
         colormap = gwy_sky
 
@@ -675,6 +679,10 @@ def make_processed_only_fig(
     ax.axis("off")
 
     cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    # Optional: make colorbar background transparent too
+    cbar.ax.set_facecolor("none")
+
     cbar.set_label("Height (nm)")
     cbar.formatter.set_scientific(False)
     cbar.formatter.set_useOffset(False)
@@ -984,7 +992,7 @@ if __name__ == "__main__":
         mask_thresh = st.slider(
             "Mask threshold (nm)",
             0.0,
-            slider_max,
+            slider_max+0.5,  # add small epsilon to allow max value when slider_max=0
             slider_max,
             step=0.05,
             help="Pixels below this are background for polynomial fitting.",
@@ -1152,7 +1160,13 @@ if __name__ == "__main__":
                     colormap=colormap,
                 )
 
-            processed_fig.savefig(save_path, dpi=600, bbox_inches="tight")
+            processed_fig.savefig(save_path,
+                                  dpi=600,
+                                  bbox_inches="tight",
+                                  transparent=True,
+                                  facecolor="none",
+                                  edgecolor="none",
+                                  )
             plt.close(processed_fig)
 
             saved = save_path
@@ -1167,7 +1181,13 @@ if __name__ == "__main__":
                     colormap=colormap,
                 )
 
-            processed_fig.savefig(save_path_svg, dpi=600, bbox_inches="tight")
+            processed_fig.savefig(save_path_svg,
+                                  dpi=600,
+                                  bbox_inches="tight",
+                                  transparent=True,
+                                  facecolor="none",
+                                  edgecolor="none",
+                                  )
             plt.close(processed_fig)
 
             saved = save_path_svg
