@@ -330,6 +330,35 @@ def apply_smoothing(
     return out
 
 
+def rotate_for_crop(
+    img: np.ndarray,
+    angle_deg: float,
+    order: int = 1,
+    cval: float = np.nan,
+) -> np.ndarray:
+    """
+    Rotate an image about its center for cropping.
+
+    reshape=False keeps the array shape unchanged so that crop-position pixel
+    coordinates (computed from the original dimensions) stay valid and the
+    pixel-to-nm scale is preserved. Regions rotated in from outside the image
+    are filled with `cval` (NaN for height data, 0 for masks). Use order=1
+    (bilinear) for continuous height data and order=0 (nearest) for masks.
+    """
+    if angle_deg == 0:
+        return img
+
+    return ndi.rotate(
+        img,
+        angle_deg,
+        reshape=False,
+        order=order,
+        mode="constant",
+        cval=cval,
+        prefilter=False,
+    )
+
+
 def full_pipeline(
     image_nm: np.ndarray,
     cfg: PipelineConfig,
@@ -494,12 +523,14 @@ def add_scale_bar(
         1.0,
         xy_unit,
         length_fraction=0.25,
+        width_fraction=0.02,
         location=location,
         color=color,
         box_color="black",
         box_alpha=0.0 if not frameon else 0.4,
         frameon=frameon,
         font_properties={"size": 10},
+        pad=2,
         dimension="si-length",
     )
 
@@ -834,48 +865,103 @@ if __name__ == "__main__":
             with st.popover("✂️ Crop image"):
                 use_crop = st.toggle("Enable crop", value=False)
 
-                crop_w = st.number_input(
-                    "Crop width (px)",
-                    min_value=1,
-                    max_value=orig_w,
-                    value=orig_w,
-                    step=1,
+                # nm per pixel
+                nm_per_px = px_to_nm
+
+                # A square crop is limited by the smaller image dimension.
+                max_dim_px = min(orig_w, orig_h)
+                max_size_nm = max_dim_px * nm_per_px
+
+                with st.container(
+                    horizontal=True,
+                    horizontal_alignment="distribute",
+                    vertical_alignment="center",
+                ):
+                    crop_unit = st.radio(
+                        "Crop size unit",
+                        ["nm", "µm"],
+                        horizontal=True,
+                        disabled=not use_crop,
+                    )
+
+                    if crop_unit == "nm":
+                        max_size = float(max_size_nm)
+                        step = 1.0
+                    else:
+                        max_size = float(max_size_nm / 1e3)
+                        step = 0.01
+
+                    crop_size_phys = st.number_input(
+                        f"Crop size ({crop_unit})",
+                        min_value=0.0,
+                        max_value=max_size,
+                        value=max_size,
+                        step=step,
+                        disabled=not use_crop,
+                        help="Side length of the square crop.",
+                    )
+
+                # Convert the requested physical size to a square pixel size.
+                crop_size_nm = (
+                    crop_size_phys if crop_unit == "nm" else crop_size_phys * 1e3
+                )
+                crop_px = int(round(crop_size_nm / nm_per_px))
+                crop_px = max(1, min(crop_px, max_dim_px))
+
+                crop_w = crop_px
+                crop_h = crop_px
+
+                rotation_deg = st.slider(
+                    "Rotation (°)",
+                    min_value=-180.0,
+                    max_value=180.0,
+                    value=0.0,
+                    step=0.5,
                     disabled=not use_crop,
+                    help="Rotate the image about its center before cropping. "
+                         "Applied after processing when crop timing is "
+                         "'after processing'. Keep the crop box away from the "
+                         "corners, which become blank after rotation.",
                 )
 
-                crop_h = st.number_input(
-                    "Crop height (px)",
-                    min_value=1,
-                    max_value=orig_h,
-                    value=orig_h,
-                    step=1,
-                    disabled=not use_crop,
-                )
+                max_x = max(0, orig_w - crop_px)
+                max_y = max(0, orig_h - crop_px)
 
-                max_x = max(0, orig_w - int(crop_w))
-                max_y = max(0, orig_h - int(crop_h))
+                with st.container(
+                    horizontal=True,
+                    horizontal_alignment="distribute",
+                    vertical_alignment="center",
+                ):
+                    crop_x = st.slider(
+                        "X position (px)",
+                        min_value=0,
+                        max_value=max_x + 1,  # epsilon so slider works when max_x=0
+                        value=0,
+                        step=1,
+                        disabled=not use_crop or max_x == 0,
+                    )
 
-                crop_x = st.slider(
-                    "X position (px)",
-                    min_value=0,
-                    max_value=max_x + 1,  # add small epsilon to allow max value when max_x=0
-                    value=0,
-                    step=1,
-                    disabled=not use_crop or max_x == 0,
-                )
-
-                crop_y = st.slider(
-                    "Y position (px)",
-                    min_value=0,
-                    max_value=max_y + 1,  # add small epsilon to allow max value when max_y=0
-                    value=0,
-                    step=1,
-                    disabled=not use_crop or max_y == 0,
-                )
+                    crop_y = st.slider(
+                        "Y position (px)",
+                        min_value=0,
+                        max_value=max_y + 1,  # epsilon so slider works when max_y=0
+                        value=0,
+                        step=1,
+                        disabled=not use_crop or max_y == 0,
+                    )
 
                 st.caption(
-                    f"Crop: x={crop_x}, y={crop_y}, "
-                    f"width={int(crop_w)}, height={int(crop_h)} px"
+                    f"Crop: {crop_px}×{crop_px} px "
+                    f"({crop_size_nm:.1f} nm) at x={crop_x}, y={crop_y} · "
+                    f"rotation={rotation_deg:.1f}°"
+                )
+
+                crop_timing = st.radio(
+                    "Apply crop",
+                    ["after processing", "before processing"],
+                    disabled=not use_crop,
+                    help="Crop the raw image before running the pipeline, "
+                         "or run the pipeline on the full image and crop the result.",
                 )
 
             if use_crop:
@@ -884,12 +970,19 @@ if __name__ == "__main__":
                 x1 = x0 + int(crop_w)
                 y1 = y0 + int(crop_h)
 
-                image_nm = orig_image_nm[y0:y1, x0:x1]
+                # The final image is cropped in both cases, so the physical
+                # scan size reflects the crop regardless of timing.
+                scan_size_um = int(crop_w) * (px_to_nm / 1e3)
 
-                scan_size_um = image_nm.shape[1] * (px_to_nm / 1e3)
+                if crop_timing == "before processing":
+                    # Rotate the raw image, then crop, then process.
+                    raw_rot = rotate_for_crop(orig_image_nm, rotation_deg, order=1)
+                    image_nm = raw_rot[y0:y1, x0:x1]
 
                 crop_meta = {
                     "enabled": True,
+                    "timing": crop_timing,
+                    "rotation_deg": float(rotation_deg),
                     "x_px": x0,
                     "y_px": y0,
                     "width_px": int(crop_w),
@@ -899,8 +992,11 @@ if __name__ == "__main__":
                 }
 
             else:
+                crop_timing = "before processing"
                 crop_meta = {
                     "enabled": False,
+                    "timing": crop_timing,
+                    "rotation_deg": 0.0,
                     "x_px": 0,
                     "y_px": 0,
                     "width_px": int(orig_w),
@@ -934,7 +1030,19 @@ if __name__ == "__main__":
                         disabled=not use_median,
                     )
 
-            p5, p95 = np.nanpercentile(image_nm, [5, 95])
+            # Statistics used for slider ranges. Base them on the rotated crop
+            # region so the Z / mask sliders track what you'll actually see,
+            # regardless of crop timing. nanpercentile ignores blank corners.
+            if use_crop:
+                if crop_timing == "before processing":
+                    stat_source = image_nm  # already rotated + cropped
+                else:
+                    raw_rot = rotate_for_crop(orig_image_nm, rotation_deg, order=1)
+                    stat_source = raw_rot[y0:y1, x0:x1]
+            else:
+                stat_source = image_nm
+
+            p5, p95 = np.nanpercentile(stat_source, [5, 95])
             slider_max = 1.2 * (p95 - p5)
 
             with st.popover("Processing settings"):
@@ -994,7 +1102,7 @@ if __name__ == "__main__":
             0.0,
             slider_max+0.5,  # add small epsilon to allow max value when slider_max=0
             slider_max,
-            step=0.05,
+            step=0.02,
             help="Pixels below this are background for polynomial fitting.",
         )
 
@@ -1081,6 +1189,26 @@ if __name__ == "__main__":
     )
 
     processed, mask = run_pipeline(image_nm, cfg.to_json())
+
+    # Crop after processing, if requested. The pipeline ran on the full image,
+    # so rotate the processed result, the mask, and the raw image about the
+    # centre (just before cropping), then slice all three identically.
+    if crop_meta["enabled"] and crop_meta["timing"] == "after processing":
+        ang = crop_meta["rotation_deg"]
+
+        cy0 = crop_meta["y_px"]
+        cx0 = crop_meta["x_px"]
+        cy1 = cy0 + crop_meta["height_px"]
+        cx1 = cx0 + crop_meta["width_px"]
+
+        # Rotate (height data bilinear + NaN fill, mask nearest + 0 fill).
+        processed = rotate_for_crop(processed, ang, order=1)
+        image_nm = rotate_for_crop(image_nm, ang, order=1)
+        mask = rotate_for_crop(mask.astype(float), ang, order=0, cval=0.0) > 0.5
+
+        processed = processed[cy0:cy1, cx0:cx1]
+        image_nm = image_nm[cy0:cy1, cx0:cx1]
+        mask = mask[cy0:cy1, cx0:cx1]
 
     extent, xy_unit = get_display_extent(scan_size_um)
 
